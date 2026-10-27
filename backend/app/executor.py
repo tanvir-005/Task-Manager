@@ -121,13 +121,42 @@ def validate_task_times(
     if error:
         return error
 
-    if end.date() != start.date():
-        end = start.replace(hour=23, minute=59)
-
     if end <= start:
         return "Task end must be later than its start."
 
     return start, end
+
+
+def validate_no_overlap(
+    session: Session,
+    start: datetime,
+    end: datetime,
+    now: datetime,
+    exclude_task_id: int | None = None,
+) -> str | None:
+    """Reject overlapping pending/postponed tasks."""
+    statement = select(Task).where(
+        Task.status.in_(("pending", "postponed")),
+        Task.start < end,
+        Task.end > start,
+        Task.end >= now,
+    )
+
+    if exclude_task_id is not None:
+        statement = statement.where(Task.id != exclude_task_id)
+
+    conflicts = session.scalars(statement.order_by(Task.start)).all()
+
+    if conflicts:
+        conflict = conflicts[0]
+        return (
+            f"Time conflicts with Task #{conflict.id} "
+            f"('{conflict.title}', "
+            f"{conflict.start.strftime('%Y-%m-%d %H:%M')}-"
+            f"{conflict.end.strftime('%Y-%m-%d %H:%M')})."
+        )
+
+    return None
 
 
 def _parse_datetime(
@@ -266,6 +295,10 @@ def _create_task(
 
     start, end = result
 
+    overlap_error = validate_no_overlap(session, start, end, now)
+    if overlap_error:
+        raise ValueError(overlap_error)
+
     category_name = operation.get("category") or "General"
 
     if not isinstance(category_name, str):
@@ -322,6 +355,12 @@ def _postpone_task(
         now,
     )
 
+    overlap_error = validate_no_overlap(
+        session, start, end, now, exclude_task_id=task.id
+    )
+    if overlap_error:
+        raise ValueError(overlap_error)
+
     task.start = start
     task.end = end
     task.status = "postponed"
@@ -343,6 +382,16 @@ def _restore_task(
         )
 
     if task.start >= now:
+        overlap_error = validate_no_overlap(
+            session,
+            task.start,
+            task.end,
+            now,
+            exclude_task_id=task.id,
+        )
+        if overlap_error:
+            raise ValueError(overlap_error)
+
         task.status = "pending"
         return task
 
@@ -351,6 +400,12 @@ def _restore_task(
         task,
         now,
     )
+
+    overlap_error = validate_no_overlap(
+        session, start, end, now, exclude_task_id=task.id
+    )
+    if overlap_error:
+        raise ValueError(overlap_error)
 
     task.start = start
     task.end = end
@@ -409,6 +464,10 @@ def _duplicate_task(
         raise ValueError(result)
 
     start, end = result
+
+    overlap_error = validate_no_overlap(session, start, end, now)
+    if overlap_error:
+        raise ValueError(overlap_error)
 
     duplicate = Task(
         title=task.title,

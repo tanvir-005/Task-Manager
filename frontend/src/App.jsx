@@ -6,6 +6,9 @@ import interactionPlugin from "@fullcalendar/interaction";
 
 import {
   CalendarDays,
+  CalendarCheck,
+  CheckCircle2,
+  Ban,
   ChevronLeft,
   ChevronRight,
   ListFilter,
@@ -15,6 +18,8 @@ import {
   Menu,
   LoaderCircle,
   X,
+  Clock3,
+  ChevronDown,
 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -30,6 +35,11 @@ function App() {
   const fileInputRef = useRef(null);
 
   const [view, setView] = useState("timeGridWeek");
+  const [activeSection, setActiveSection] = useState("calendar");
+  const [historyTasks, setHistoryTasks] = useState([]);
+  const [selectedTask, setSelectedTask] = useState(null);
+  const [historyRefresh, setHistoryRefresh] = useState(0);
+  const [isLoadingHistory, setIsLoadingHistory] = useState(false);
   const [categories, setCategories] = useState([]);
   const [activeCategories, setActiveCategories] = useState([]);
   const [prompt, setPrompt] = useState("");
@@ -89,23 +99,36 @@ function App() {
 
         const tasks = await response.json();
 
+        const now = new Date();
         const events = tasks
-          .filter((task) => activeCategories.includes(task.category))
-          .map((task) => ({
+          .filter(
+            (task) =>
+              ["pending", "postponed"].includes(task.status) &&
+              activeCategories.includes(task.category),
+          )
+          .map((task) => {
+            const overdue =
+              new Date(task.end).getTime() < now.getTime();
+            return {
             id: String(task.id),
             title: task.title,
             start: task.start,
             end: task.end,
-            backgroundColor: task.color,
-            borderColor: task.color,
+            backgroundColor: overdue ? "#B91C1C" : task.color,
+            borderColor: overdue ? "#991B1B" : task.color,
             textColor: "#ffffff",
-            classNames: [`task-status-${task.status}`],
+            classNames: [
+              `task-status-${task.status}`,
+              overdue ? "task-overdue" : "",
+            ].filter(Boolean),
             extendedProps: {
               description: task.description,
               category: task.category,
-              status: task.status,
+              status: overdue ? "overdue" : task.status,
+              task,
             },
-          }));
+          };
+          });
 
         successCallback(events);
       } catch (err) {
@@ -115,6 +138,47 @@ function App() {
     },
     [activeCategories],
   );
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadHistoryTasks() {
+      setIsLoadingHistory(true);
+      try {
+        const params = new URLSearchParams({
+          start: "1900-01-01T00:00",
+          end: "2200-01-01T00:00",
+        });
+        const response = await fetch(`/api/tasks?${params.toString()}`);
+
+        if (!response.ok) {
+          throw new Error("Could not load task history.");
+        }
+
+        const tasks = await response.json();
+        if (!cancelled) {
+          setHistoryTasks(
+            tasks
+              .filter((task) => ["completed", "cancelled"].includes(task.status))
+              .sort((a, b) => b.start.localeCompare(a.start)),
+          );
+        }
+      } catch (err) {
+        if (!cancelled) setError(err.message || "Could not load task history.");
+      } finally {
+        if (!cancelled) setIsLoadingHistory(false);
+      }
+    }
+
+    loadHistoryTasks();
+    return () => { cancelled = true; };
+  }, [historyRefresh]);
+
+  function changeSection(section) {
+    setActiveSection(section);
+    setSidebarOpen(false);
+    setError("");
+  }
 
   function changeView(nextView) {
     calendarApi()?.changeView(nextView);
@@ -168,10 +232,11 @@ function App() {
     setFiles((current) => current.filter((_, i) => i !== index));
   }
 
-  async function submitPrompt(event) {
-    event.preventDefault();
+  async function submitPrompt(event, promptOverride = null) {
+    event?.preventDefault();
+    const promptToSend = promptOverride ?? prompt;
 
-    if (!prompt.trim() || isSubmitting) return;
+    if (!promptToSend.trim() || isSubmitting) return;
 
     setIsSubmitting(true);
     setError("");
@@ -181,7 +246,7 @@ function App() {
     try {
       const formData = new FormData();
 
-      formData.append("prompt", prompt.trim());
+      formData.append("prompt", promptToSend.trim());
       formData.append("now", formatLocalDateTime(new Date()));
 
       for (const file of files) {
@@ -210,6 +275,7 @@ function App() {
       setFiles([]);
 
       calendarApi()?.refetchEvents();
+      setHistoryRefresh((current) => current + 1);
 
       try {
         const categoriesResponse = await fetch("/api/categories");
@@ -273,6 +339,8 @@ function App() {
         </div>
 
         <div className="flex items-center gap-2">
+          {activeSection === "calendar" && (
+          <>
           <Button variant="outline" size="sm" onClick={() => navigate("today")}>
             Today
           </Button>
@@ -296,6 +364,8 @@ function App() {
               <ChevronRight className="size-4" />
             </Button>
           </div>
+          </>
+          )}
         </div>
       </header>
 
@@ -325,6 +395,20 @@ function App() {
             Describe a task
           </Button>
 
+          <nav className="mt-6 space-y-1" aria-label="Task views">
+            <button
+              type="button"
+              onClick={() => changeSection("calendar")}
+              aria-current="page"
+              className="flex w-full items-center gap-3 rounded-lg bg-primary/10 px-3 py-2.5 text-sm font-medium text-primary"
+            >
+              <CalendarDays className="size-4" />
+              <span>My Calendar</span>
+            </button>
+          </nav>
+
+          {activeSection === "calendar" && (
+          <>
           <div className="mt-8">
             <div className="mb-3">
               <h2 className="text-sm font-semibold">Calendar views</h2>
@@ -390,6 +474,8 @@ function App() {
               </div>
             )}
           </div>
+          </>
+          )}
 
           <div className="mt-auto hidden rounded-xl border p-4 md:block">
             <p className="text-sm font-medium">Plan naturally</p>
@@ -404,12 +490,23 @@ function App() {
           <div className="mx-auto max-w-7xl">
             <div className="mb-5 flex flex-wrap items-end justify-between gap-3">
               <div>
-                <p className="text-sm text-muted-foreground">Your schedule</p>
+                <p className="text-sm text-muted-foreground">
+                  {activeSection === "calendar"
+                    ? "Your schedule"
+                    : activeSection === "completed"
+                      ? "Task history"
+                      : "Task history"}
+                </p>
                 <h2 className="mt-1 text-2xl font-semibold tracking-tight sm:text-3xl">
-                  Plan your time
+                  {activeSection === "calendar"
+                    ? "Plan your time"
+                    : activeSection === "completed"
+                      ? "Completed tasks"
+                      : "Cancelled tasks"}
                 </h2>
               </div>
 
+              {activeSection === "calendar" && (
               <div className="flex items-center gap-1 rounded-lg border p-1 sm:hidden">
                 <Button
                   variant="ghost"
@@ -428,6 +525,7 @@ function App() {
                   <ChevronRight className="size-4" />
                 </Button>
               </div>
+              )}
             </div>
 
             {error && (
@@ -470,56 +568,138 @@ function App() {
               </div>
             )}
 
-            <section className="min-w-0 overflow-hidden rounded-xl border bg-card p-2 shadow-sm sm:p-4">
-              <FullCalendar
-                ref={calendarRef}
-                plugins={[
-                  dayGridPlugin,
-                  timeGridPlugin,
-                  interactionPlugin,
-                ]}
-                initialView="timeGridWeek"
-                headerToolbar={{
-                  left: "title",
-                  center: "",
-                  right: "",
-                }}
-                height="auto"
-                nowIndicator
-                allDaySlot={false}
-                dayMaxEvents
-                weekends
-                expandRows
-                slotMinTime="06:00:00"
-                slotMaxTime="23:00:00"
-                slotDuration="00:30:00"
-                scrollTime="08:00:00"
-                events={loadCalendarEvents}
-                eventDisplay="block"
-                handleWindowResize
-                eventTimeFormat={{
-                  hour: "numeric",
-                  minute: "2-digit",
-                  meridiem: "short",
-                }}
-                eventDidMount={(info) => {
-                  const { category, status, description } =
-                    info.event.extendedProps;
+            <div className="grid min-w-0 grid-cols-1 items-start gap-4 xl:grid-cols-[minmax(0,1fr)_320px]">
+              <section className="min-w-0 overflow-hidden rounded-xl border bg-card p-2 shadow-sm sm:p-4">
+                <FullCalendar
+                  ref={calendarRef}
+                  plugins={[dayGridPlugin, timeGridPlugin, interactionPlugin]}
+                  initialView="timeGridWeek"
+                  headerToolbar={{ left: "title", center: "", right: "" }}
+                  height="auto"
+                  nowIndicator
+                  allDaySlot={false}
+                  dayMaxEvents
+                  weekends
+                  expandRows
+                  slotMinTime="00:00:00"
+                  slotMaxTime="24:00:00"
+                  slotDuration="00:30:00"
+                  scrollTime="08:00:00"
+                  events={loadCalendarEvents}
+                  eventDisplay="block"
+                  eventClick={(info) => setSelectedTask(info.event.extendedProps.task)}
+                  handleWindowResize
+                  eventTimeFormat={{ hour: "numeric", minute: "2-digit", meridiem: "short" }}
+                  eventContent={(arg) => (
+                    <div className="overflow-hidden px-0.5 py-0.5 leading-tight">
+                      <div className="truncate text-xs font-semibold sm:text-sm" title={arg.event.title}>
+                        {arg.event.title}
+                      </div>
+                      <div className="truncate text-[10px] sm:text-xs">
+                        {arg.timeText}
+                      </div>
+                    </div>
+                  )}
+                  eventDidMount={(info) => {
+                    const { category, status, description } = info.event.extendedProps;
+                    info.el.title = [
+                      info.event.title,
+                      category ? `Category: ${category}` : "",
+                      status ? `Status: ${status}` : "",
+                      description || "",
+                    ].filter(Boolean).join("\n");
+                  }}
+                />
+              </section>
 
-                  info.el.title = [
-                    info.event.title,
-                    category ? `Category: ${category}` : "",
-                    status ? `Status: ${status}` : "",
-                    description || "",
-                  ]
-                    .filter(Boolean)
-                    .join("\n");
-                }}
-              />
-            </section>
+              <aside className="min-w-0 space-y-3" aria-label="Task history">
+                <div className="rounded-xl border bg-card shadow-sm">
+                  <details open>
+                    <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-4 py-3 [&::-webkit-details-marker]:hidden">
+                      <span className="flex min-w-0 items-center gap-2 text-sm font-semibold">
+                        <CheckCircle2 className="size-4 shrink-0 text-emerald-600" />
+                        Completed
+                        <span className="rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground">{historyTasks.filter((task) => task.status === "completed").length}</span>
+                      </span>
+                      <ChevronDown className="size-4 shrink-0 text-muted-foreground" />
+                    </summary>
+                    <div className="max-h-72 space-y-1 overflow-y-auto border-t p-2">
+                      {isLoadingHistory ? (
+                        <p className="p-3 text-xs text-muted-foreground">Loading tasks...</p>
+                      ) : historyTasks.filter((task) => task.status === "completed").length === 0 ? (
+                        <p className="p-3 text-xs text-muted-foreground">Completed tasks will appear here.</p>
+                      ) : historyTasks.filter((task) => task.status === "completed").map((task) => (
+                        <button key={task.id} type="button" onClick={() => setSelectedTask(task)} className="flex w-full min-w-0 items-start gap-2 rounded-lg p-2 text-left hover:bg-muted">
+                          <span className="mt-1.5 size-2.5 shrink-0 rounded-full" style={{ backgroundColor: task.color }} />
+                          <span className="min-w-0 flex-1">
+                            <span className="block break-words text-sm font-medium leading-snug">{task.title}</span>
+                            <span className="mt-1 block text-xs text-muted-foreground">{new Date(task.start).toLocaleDateString()} · {new Date(task.start).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>
+                          </span>
+                        </button>
+                      ))}
+                    </div>
+                  </details>
+                </div>
+
+                <div className="rounded-xl border bg-card shadow-sm">
+                  <details open>
+                    <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-4 py-3 [&::-webkit-details-marker]:hidden">
+                      <span className="flex min-w-0 items-center gap-2 text-sm font-semibold">
+                        <Ban className="size-4 shrink-0 text-muted-foreground" />
+                        Cancelled
+                        <span className="rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground">{historyTasks.filter((task) => task.status === "cancelled").length}</span>
+                      </span>
+                      <ChevronDown className="size-4 shrink-0 text-muted-foreground" />
+                    </summary>
+                    <div className="max-h-72 space-y-1 overflow-y-auto border-t p-2">
+                      {isLoadingHistory ? (
+                        <p className="p-3 text-xs text-muted-foreground">Loading tasks...</p>
+                      ) : historyTasks.filter((task) => task.status === "cancelled").length === 0 ? (
+                        <p className="p-3 text-xs text-muted-foreground">Cancelled tasks will appear here.</p>
+                      ) : historyTasks.filter((task) => task.status === "cancelled").map((task) => (
+                        <button key={task.id} type="button" onClick={() => setSelectedTask(task)} className="flex w-full min-w-0 items-start gap-2 rounded-lg p-2 text-left hover:bg-muted">
+                          <span className="mt-1.5 size-2.5 shrink-0 rounded-full" style={{ backgroundColor: task.color }} />
+                          <span className="min-w-0 flex-1">
+                            <span className="block break-words text-sm font-medium leading-snug">{task.title}</span>
+                            <span className="mt-1 block text-xs text-muted-foreground">{new Date(task.start).toLocaleDateString()} · {new Date(task.start).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>
+                          </span>
+                        </button>
+                      ))}
+                    </div>
+                  </details>
+                </div>
+                <p className="px-1 text-xs leading-relaxed text-muted-foreground">Select any event or history item to read its full details. Restore or change a task by describing the action in the prompt below.</p>
+              </aside>
+            </div>
+
+            {selectedTask && (
+              <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setSelectedTask(null); }}>
+                <section role="dialog" aria-modal="true" aria-labelledby="task-detail-title" className="max-h-[85vh] w-full max-w-lg overflow-y-auto rounded-2xl border bg-background p-5 shadow-xl sm:p-6">
+                  <div className="flex items-start justify-between gap-4">
+                    <div className="flex min-w-0 items-start gap-3">
+                      <span className="mt-1.5 size-3 shrink-0 rounded-full" style={{ backgroundColor: selectedTask.color }} />
+                      <div className="min-w-0">
+                        <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Task details</p>
+                        <h3 id="task-detail-title" className="mt-1 break-words text-xl font-semibold leading-snug">{selectedTask.title}</h3>
+                      </div>
+                    </div>
+                    <Button variant="ghost" size="icon" aria-label="Close task details" onClick={() => setSelectedTask(null)}><X className="size-4" /></Button>
+                  </div>
+                  <div className="mt-5 space-y-4 text-sm">
+                    <div className="flex items-start gap-3"><ListFilter className="mt-0.5 size-4 shrink-0 text-muted-foreground" /><div><p className="text-xs text-muted-foreground">Category</p><p className="mt-0.5 font-medium">{selectedTask.category || "General"}</p></div></div>
+                    <div className="flex items-start gap-3"><Clock3 className="mt-0.5 size-4 shrink-0 text-muted-foreground" /><div><p className="text-xs text-muted-foreground">Schedule</p><p className="mt-0.5 font-medium">{new Date(selectedTask.start).toLocaleString()} – {new Date(selectedTask.end).toLocaleString()}</p></div></div>
+                    <div><p className="text-xs text-muted-foreground">Status</p><p className="mt-1 inline-flex rounded-full bg-muted px-2.5 py-1 text-xs font-medium capitalize">{selectedTask.status}</p></div>
+                    <div><p className="text-xs text-muted-foreground">Description</p><p className="mt-1 whitespace-pre-wrap break-words leading-relaxed">{selectedTask.description?.trim() || "No description provided."}</p></div>
+                    <div className="rounded-lg bg-muted/60 p-3 text-xs leading-relaxed text-muted-foreground">To change or restore this task, enter a prompt such as <span className="font-medium text-foreground">“Restore task #{selectedTask.id}”</span> or <span className="font-medium text-foreground">“Move task #{selectedTask.id} to tomorrow at 10 AM.”</span></div>
+                  </div>
+                </section>
+              </div>
+            )}
 
             <p className="mt-3 text-xs text-muted-foreground">
-              Your schedule is synced with your task database.
+              {activeSection === "calendar"
+                ? "Your active schedule is here. Completed and cancelled tasks are listed alongside it; select any task to read its details."
+                : "This view shows historical tasks from your task database."}
             </p>
           </div>
         </main>
